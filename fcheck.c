@@ -212,7 +212,7 @@ int test2(){
   get_indirect_blocks(indirect_block, direct_blocks);						//call helper to find indirect blocks
   for(j = 0; j < NINDIRECT; j++){								//test all indirect blocks
     if(direct_blocks[j] == 0){ continue; }							//skip if block is unassigned
-    if(direct_blocks[j] < start || direct_blocks[i] >= sb->size){
+    if(direct_blocks[j] < start || direct_blocks[j] >= sb->size){
      fprintf(stderr, "ERROR: bad indirect address in inode.\n");                                //exit with error for bad indirect inode address
      exit(1);
     }
@@ -226,11 +226,28 @@ int test2(){
 //for blocks marked in-use in the bitmap the block should be used by an inode or an indirect inode
 int test6(){
  int i, j;					
- int bits[sb->size + 1];									//array to store blocks in inodes
- for(i = 0; i < sb->size + 1; i++){								//initialize array to 0
+ int bits[sb->size];										//array to store blocks in inodes
+ for(i = 0; i < sb->size; i++){									//initialize array to 0
   bits[i] = 0;
  }
+ 
+ int niblock = (sb->ninodes / IPB);
+ if((sb->ninodes % IPB) != 0){
+  niblock ++;
+ }
 
+ int bmblock = (sb->size / (BSIZE * 8));
+
+ if((sb->size % (BSIZE * 8)) != 0){
+  bmblock ++;
+ }
+
+ int metablocks = 2 + niblock + bmblock;
+
+ for(i = 0; i < metablocks + 1; i++){
+  bits[i] = 1;
+ }
+ 
  for(i = 0; i < sb->ninodes; i++){								//loop through all inodes
   struct dinode *inode = INODE_ADDR(i);
   for(j = 0; j < NDIRECT; j++){
@@ -239,7 +256,7 @@ int test6(){
   }
 
   if(inode->addrs[NDIRECT] == 0){continue;}							//skip if indirect block is unassigned
-  //bits[inode->addrs[NDIRECT]] = 1;
+  bits[inode->addrs[NDIRECT]] = 1;
 
   int direct_blocks[NINDIRECT];
   int indirect_block = inode->addrs[NDIRECT];
@@ -261,7 +278,7 @@ int test6(){
    if(bits[i] == 0){
     fprintf(stderr, "ERROR: bitmap marks block in use but it is not in use.\n");                 //exit with error for data-bitmap inode inconsistency
     exit(1);
-   //printf("%dAAAAAAAAA%dBBBBBBBB%d\n",bit,bits[i],i); //test output
+    //printf("%dAAAAAAAAA%dBBBBBBBB%d\n",bit,bits[i],i); //test output
    }
  }
  
@@ -309,28 +326,17 @@ int test78(){
 //number of links in a file does not mach its appearances in directories
 int test11(){
  int i;
- int count[sb->ninodes];
- for(int i = 0; i < sb->ninodes; i++)
- {
-  count[i] = 0;
- }
 
- for(i = 0; i < sb->ninodes; i++){								//run test for every inode
-  struct dinode *inode = INODE_ADDR(i);
-  if(inode->type == T_DIR){
-        
-	//need to navigate the dirents for this inode
-	//  if(de->inum != 0){
-	//  count[de->inum]++;
-
-   }
-  }
-
- for(i = 0; i < sb->ninodes; i++){
+ for(i = 0; i < sb->ninodes; i++){						//run test for every inode
   struct dinode *inode = INODE_ADDR(i);
   if(inode->type == T_FILE){
-   if(inode[i].nlink != count[i]){
-    fprintf(stderr, "ERROR: inode referred to in directory but marked free.\n");                 //exit with error for file reference count inconsistency
+   
+   //active_inode_list is calulated in the directory helper function
+   int refcount = active_inode_list[i] - 1;				       //get reference count in directories for inode
+   
+   if(inode->nlink != refcount){					       // compare directory references to inode links
+    fprintf(stderr, "ERROR: bad reference count for file.\n");                //exit with error for file reference count inconsistency
+    //printf("%d AAAAAAAAAAA %d\n",inode->nlink,refcount);
     exit(1);
    }
   }
@@ -344,9 +350,9 @@ int test11(){
 //no extra links for directories
 int test12(){
  int i;
- for(i = 0; i < sb->ninodes; i++){								//run test for every inode
+ for(i = 1; i < sb->ninodes; i++){								//run test for every inode
   struct dinode *inode = INODE_ADDR(i);
-  if(inode->type == T_DIR && inode->nlink > 1){							//check number of links if inode is a directory
+  if(inode->type == T_DIR && active_inode_list[i]   /* inode->nlink*/ > 1){			//check number of links if inode is a directory
    fprintf(stderr, "ERROR: directory appears more than once in file system.\n");		//exit with error for invalid directory links
    exit(1);
   }
@@ -386,7 +392,6 @@ sb = (struct superblock *) (addr + 1 * BLOCK_SIZE);
 
 active_inode_list = (int *)calloc(sb->ninodes + 1, sizeof(int));
 
-//test6();
   
   //Loop over every inode
   int inum;
@@ -454,10 +459,10 @@ for(inum = 1; inum < sb->ninodes; inum++){
  //should exit with error (1) if any test fails
  test2();
  
- //test6();     //bugfix required
+ test6();     
  test78();
  
- //test11();    //need to finish
+ test11();  
  test12();
 
  exit(0); //exit 0 if all tests pass
