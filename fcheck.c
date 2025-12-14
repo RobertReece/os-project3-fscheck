@@ -212,7 +212,7 @@ int test2(){
   get_indirect_blocks(indirect_block, direct_blocks);						//call helper to find indirect blocks
   for(j = 0; j < NINDIRECT; j++){								//test all indirect blocks
     if(direct_blocks[j] == 0){ continue; }							//skip if block is unassigned
-    if(direct_blocks[j] < start || direct_blocks[i] >= sb->size){
+    if(direct_blocks[j] < start || direct_blocks[j] >= sb->size){
      fprintf(stderr, "ERROR: bad indirect address in inode.\n");                                //exit with error for bad indirect inode address
      exit(1);
     }
@@ -326,28 +326,17 @@ int test78(){
 //number of links in a file does not mach its appearances in directories
 int test11(){
  int i;
- int count[sb->ninodes];
- for(int i = 0; i < sb->ninodes; i++)
- {
-  count[i] = 0;
- }
 
- for(i = 0; i < sb->ninodes; i++){								//run test for every inode
-  struct dinode *inode = INODE_ADDR(i);
-  if(inode->type == T_DIR){
-        
-	//need to navigate the dirents for this inode
-	//  if(de->inum != 0){
-	//  count[de->inum]++;
-
-   }
-  }
-
- for(i = 0; i < sb->ninodes; i++){
+ for(i = 0; i < sb->ninodes; i++){						//run test for every inode
   struct dinode *inode = INODE_ADDR(i);
   if(inode->type == T_FILE){
-   if(inode[i].nlink != count[i]){
-    fprintf(stderr, "ERROR: inode referred to in directory but marked free.\n");                 //exit with error for file reference count inconsistency
+   
+   //active_inode_list is calulated in the directory helper function
+   int refcount = active_inode_list[i] - 1;				       //get reference count in directories for inode
+   
+   if(inode->nlink != refcount){					       // compare directory references to inode links
+    fprintf(stderr, "ERROR: bad reference count for file.\n");                //exit with error for file reference count inconsistency
+    //printf("%d AAAAAAAAAAA %d\n",inode->nlink,refcount);
     exit(1);
    }
   }
@@ -361,9 +350,9 @@ int test11(){
 //no extra links for directories
 int test12(){
  int i;
- for(i = 0; i < sb->ninodes; i++){								//run test for every inode
+ for(i = 1; i < sb->ninodes; i++){								//run test for every inode
   struct dinode *inode = INODE_ADDR(i);
-  if(inode->type == T_DIR && inode->nlink > 1){							//check number of links if inode is a directory
+  if(inode->type == T_DIR && active_inode_list[i]   /* inode->nlink*/ > 1){			//check number of links if inode is a directory
    fprintf(stderr, "ERROR: directory appears more than once in file system.\n");		//exit with error for invalid directory links
    exit(1);
   }
@@ -403,7 +392,6 @@ sb = (struct superblock *) (addr + 1 * BLOCK_SIZE);
 
 active_inode_list = (int *)calloc(sb->ninodes + 1, sizeof(int));
 
-test6();
   
   //Loop over every inode
   int inum;
@@ -471,10 +459,10 @@ for(inum = 1; inum < sb->ninodes; inum++){
  //should exit with error (1) if any test fails
  test2();
  
- //test6();     //bugfix required
+ test6();     
  test78();
  
- //test11();    //need to finish
+ test11();  
  test12();
 
  exit(0); //exit 0 if all tests pass
