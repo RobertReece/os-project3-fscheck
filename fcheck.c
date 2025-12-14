@@ -26,9 +26,9 @@ struct dinode *dip;
 struct superblock *sb;
 struct dirent *de;
 int fsfd;
-int* active_inode_list;
+int* active_inode_list;//used to track allocated inodes to check if they're present in directories 
 
-//used to track allocated inodes to check if they're present in directories 
+
 //Function for test case 1
 //this function checks what type is on the inode 
 //if it's not a valid type check if its unallocated
@@ -92,7 +92,7 @@ void print_directory_contents(int dir_inum) {
   exit(1);
  }
 
- active_inode_list[de->inum] = -1;
+ active_inode_list[de->inum] += 1;
 			
 
  //Skip "." and ".." directory entries and note that we found them
@@ -151,7 +151,8 @@ if (dip->addrs[NDIRECT] != 0) {
      fprintf(stderr, "ERROR: inode referred to in directory but marked free.\n");
      exit(1);
 }
-    active_inode_list[de->inum] = -1;
+    
+    active_inode_list[de->inum] += 1;
 			
 
     //Skip "." and ".." directory entries and note that we found them
@@ -457,6 +458,7 @@ test6();
 print_directory_contents(ROOTINO);
   
 for(inum = 1; inum < sb->ninodes; inum++){
+ //printf("inode %d seen %d times\n",inum, active_inode_list[inum] - 1);
  if (active_inode_list[inum] == 1){
   //printf("ERROR with inode %d\n", inum);
   fprintf(stderr, "ERROR: inode marked use but not found in a directory.\n");
