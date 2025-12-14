@@ -113,6 +113,70 @@ void print_directory_contents(int dir_inum) {
 			}
 		}
 	}
+	
+	// If the inode has an indirect block, read the indirect block
+	if (dip->addrs[NDIRECT] != 0) {
+		
+		printf("Done looking at direct blocks\n");
+		int indirect_block = dip->addrs[NDIRECT];
+		
+		int block_list[NINDIRECT];
+
+		// Get the list of blocks from the indirect block
+		get_indirect_blocks(indirect_block, block_list);
+		
+		for (int i = 0; i < NINDIRECT; i++) {
+
+			int block = block_list[i];
+			if (block != 0) {
+				struct dirent *de = (struct dirent *)(addr + block_list[i] * BLOCK_SIZE);
+				int num_entries = BLOCK_SIZE / sizeof(struct dirent); 
+				
+				// Loop through the directory entries and print them
+				for (int i = 0; i < num_entries; i++, de++) {
+	
+					// If the entry is a directory, print its contents recursively
+					if (de->inum != 0) {
+						printf("inum %d, name %s\n", de->inum, de->name);
+			
+						//check if inode was allocated when we looped through the inodes
+						if (active_inode_list[de->inum] == 0){
+							fprintf(stderr, "ERROR: inode referred to in directory but marked free.\n");
+							exit(1);
+						}
+
+						active_inode_list[de->inum] = -1;
+			
+
+						//Skip "." and ".." directory entries and note that we found them
+						if (strcmp(de->name, ".") == 0){
+							if (de->inum != dir_inum){
+								fprintf(stderr, "ERROR: directory not properly formatted.\n");
+							}
+							found_self = true;
+							continue;
+						} else if (strcmp(de->name, "..") == 0) {
+							found_parent = true;
+							//If we're curretnly in the root dir, check that .. is the root dir still
+							if (dir_inum == ROOTINO && de->inum != dir_inum){
+								fprintf(stderr, "ERROR: root directory does not exist.\n");
+								exit(1);
+							}
+							continue;
+						}
+			
+						struct dinode *entry_inode = INODE_ADDR(de->inum);
+
+						// If it's a directory, recurse
+						if (entry_inode->type == 1){
+							printf("  Recursively listing directory: %s\n", de->name);
+							print_directory_contents(de->inum);
+						}
+					}
+				}
+			}
+		}
+	}
 	if (found_self && found_parent) { return;}
 	fprintf(stderr, "ERROR: directory not properly formatted.\n");
 	exit(1);
@@ -171,7 +235,7 @@ int main(int argc, char *argv[]) {
   //Loop over every inode
   int inum;
   //TODO: Potential indexing error?
-  for(inum = 1; inum < sb->ninodes; inum++) {
+  for(inum = 1; inum < sb->ninodes + 1; inum++) {
 	struct dinode *ip = INODE_ADDR(inum);
 	check_valid_inode(ip);
  	if (inum == 1 && ip->size == 0){
@@ -228,6 +292,8 @@ int main(int argc, char *argv[]) {
   
   for(inum = 1; inum < sb->ninodes; inum++){
 	if (active_inode_list[inum] == 1){
+		
+		printf("ERROR with inode %d\n", inum);
 		fprintf(stderr, "ERROR: inode marked use but not found in a directory.\n");
 		exit(1);
 	}
