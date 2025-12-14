@@ -238,6 +238,8 @@ int test6(){
   }
 
   if(inode->addrs[NDIRECT] == 0){continue;}							//skip if indirect block is unassigned
+  //bits[inode->addrs[NDIRECT]] = 1;
+
   int direct_blocks[NINDIRECT];
   int indirect_block = inode->addrs[NDIRECT];
   get_indirect_blocks(indirect_block, direct_blocks);
@@ -250,17 +252,18 @@ int test6(){
 
  //compare the bitmap created using inodes to the bitmap in the image file
  
- for(i = sb->size; i >= sb->size - sb->nblocks; i--)
+ for(i = 0; i < sb->size; i++)
  {
    //printf("%d\n",i);
    int bit = get_bit(i);
    if(bit == 0) {continue;}
    if(bits[i] == 0){
+    fprintf(stderr, "ERROR: bitmap marks block in use but it is not in use.\n");                 //exit with error for data-bitmap inode inconsistency
+    exit(1);
    //printf("%dAAAAAAAAA%dBBBBBBBB%d\n",bit,bits[i],i); //test output
    }
  }
  
- //fprintf(stderr, "ERROR: bitmap marks block in use but it is not in use.\n");			//exit with error for data-bitmap inode inconsistency
  return 0; //return 0 if test passes
 }
 
@@ -376,13 +379,13 @@ main(int argc, char *argv[]){
   exit(1);
  }
 
- //sb = (struct superblock *) (addr + 1 * BLOCK_SIZE);
+sb = (struct superblock *) (addr + 1 * BLOCK_SIZE);
  //printf("fs size %d, no. of blocks %d, no. of inodes %d \n", sb->size, sb->nblocks, sb->ninodes);
 
 
 active_inode_list = (int *)calloc(sb->ninodes + 1, sizeof(int));
 
-
+//test6();
   
   //Loop over every inode
   int inum;
