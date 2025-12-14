@@ -26,29 +26,170 @@ struct dinode *dip;
 struct superblock *sb;
 struct dirent *de;
 int fsfd;
+int* active_inode_list;
 
-
-int get_bit(int block_number){
- int bitmap_block = BBLOCK(block_number, sb->ninodes);
- unsigned char *bitmap = (unsigned char *)(addr + bitmap_block * BLOCK_SIZE);
- return (bitmap[block_number / 8] >> (block_number % 8)) & 1;
-
+//used to track allocated inodes to check if they're present in directories 
+//Function for test case 1
+//this function checks what type is on the inode 
+//if it's not a valid type check if its unallocated
+//if its both invalid type and allocated, throw error
+void check_valid_inode(struct dinode *ip){
+	if (ip->type < 1 || ip->type > 3){
+		if (ip-> type == 0 && ip->size == 0) { return; }
+		fprintf(stderr, "ERROR: bad inode.\n");
+		exit(1);
+	}
 }
 
-void get_indirect_blocks(int indirect_block, int *block_list){
- uint *indirect = (uint *) (addr + indirect_block * BLOCK_SIZE);
- 
- int i;
- for(i = 0; i < NINDIRECT; i++)
- {
-  block_list[i] = indirect[i];
- }
-
+// Function to read the value for block in the bitmap
+// returns  and integer 1/0 (allocated/not allocated)
+int get_bit(int block_number) {
+	int bitmap_block = BBLOCK(block_number, sb->ninodes); 
+	unsigned char *bitmap = (unsigned char *)(addr + bitmap_block * BLOCK_SIZE);
+	// Get the byte and check the bit corresponding to the block
+	return (bitmap[block_number / 8] >> (block_number % 8)) & 1;
 }
 
-int test1(){
- return 0; //return 0 if test passes otherwise print error message and exit
+// Helper function to get the indirect blocks into a list for processing
+// takes the provided block number and gets the pointer for that block
+// loops through the indirect block and copies it to the passed pointer to be used later
+void get_indirect_blocks(int indirect_block, int *block_list) {
+	uint *indirect = (uint *)(addr + indirect_block * BLOCK_SIZE);
+	// Read the indirect block and copy it to block_list
+	for (int i = 0; i < NINDIRECT; i++) {
+		block_list[i] = indirect[i];  // Store each block pointer
+	}
 }
+
+
+//Helper function to recursively traverse directories from the given inode
+//this function assumes that we've already validated every inode
+void print_directory_contents(int dir_inum) {
+	bool found_parent = false;
+	bool found_self = false;
+	// Access the inode for the directory
+	struct dinode *dip = INODE_ADDR(dir_inum);
+
+	// Only process if it's a directory (type == 1)
+	if (dip->type != 1) {
+		return;
+	}
+    
+	// Read the directory blocks
+	struct dirent *de = (struct dirent *)(addr + (dip->addrs[0]) * BLOCK_SIZE);
+	int num_entries = dip->size / sizeof(struct dirent);
+    
+	// Loop through the directory entries and print them
+	for (int i = 0; i < num_entries; i++, de++) {
+	
+		// If the entry is a directory, print its contents recursively
+		if (de->inum != 0) {
+			printf("inum %d, name %s\n", de->inum, de->name);
+			
+			//check if inode was allocated when we looped through the inodes
+			if (active_inode_list[de->inum] == 0){
+				fprintf(stderr, "ERROR: inode referred to in directory but marked free.\n");
+				exit(1);
+			}
+
+			active_inode_list[de->inum] = -1;
+			
+
+			//Skip "." and ".." directory entries and note that we found them
+			if (strcmp(de->name, ".") == 0){
+				if (de->inum != dir_inum){
+					fprintf(stderr, "ERROR: directory not properly formatted.\n");
+				}
+				found_self = true;
+				continue;
+			} else if (strcmp(de->name, "..") == 0) {
+				found_parent = true;
+				//If we're curretnly in the root dir, check that .. is the root dir still
+				if (dir_inum == ROOTINO && de->inum != dir_inum){
+					fprintf(stderr, "ERROR: root directory does not exist.\n");
+					exit(1);
+				}
+				continue;
+			}
+			
+			struct dinode *entry_inode = INODE_ADDR(de->inum);
+
+			// If it's a directory, recurse
+			if (entry_inode->type == 1){
+				printf("  Recursively listing directory: %s\n", de->name);
+				print_directory_contents(de->inum);
+			}
+		}
+	}
+	
+	// If the inode has an indirect block, read the indirect block
+	if (dip->addrs[NDIRECT] != 0) {
+		
+		printf("Done looking at direct blocks\n");
+		int indirect_block = dip->addrs[NDIRECT];
+		
+		int block_list[NINDIRECT];
+
+		// Get the list of blocks from the indirect block
+		get_indirect_blocks(indirect_block, block_list);
+		
+		for (int i = 0; i < NINDIRECT; i++) {
+
+			int block = block_list[i];
+			if (block != 0) {
+				struct dirent *de = (struct dirent *)(addr + block_list[i] * BLOCK_SIZE);
+				int num_entries = BLOCK_SIZE / sizeof(struct dirent); 
+				
+				// Loop through the directory entries and print them
+				for (int i = 0; i < num_entries; i++, de++) {
+	
+					// If the entry is a directory, print its contents recursively
+					if (de->inum != 0) {
+						printf("inum %d, name %s\n", de->inum, de->name);
+			
+						//check if inode was allocated when we looped through the inodes
+						if (active_inode_list[de->inum] == 0){
+							fprintf(stderr, "ERROR: inode referred to in directory but marked free.\n");
+							exit(1);
+						}
+
+						active_inode_list[de->inum] = -1;
+			
+
+						//Skip "." and ".." directory entries and note that we found them
+						if (strcmp(de->name, ".") == 0){
+							if (de->inum != dir_inum){
+								fprintf(stderr, "ERROR: directory not properly formatted.\n");
+							}
+							found_self = true;
+							continue;
+						} else if (strcmp(de->name, "..") == 0) {
+							found_parent = true;
+							//If we're curretnly in the root dir, check that .. is the root dir still
+							if (dir_inum == ROOTINO && de->inum != dir_inum){
+								fprintf(stderr, "ERROR: root directory does not exist.\n");
+								exit(1);
+							}
+							continue;
+						}
+			
+						struct dinode *entry_inode = INODE_ADDR(de->inum);
+
+						// If it's a directory, recurse
+						if (entry_inode->type == 1){
+							printf("  Recursively listing directory: %s\n", de->name);
+							print_directory_contents(de->inum);
+						}
+					}
+				}
+			}
+		}
+	}
+	if (found_self && found_parent) { return;}
+	fprintf(stderr, "ERROR: directory not properly formatted.\n");
+	exit(1);
+}
+
 
 //function for test case #2
 //for each inode its blocks must point to a valid data block address in the image
@@ -81,15 +222,6 @@ int test2(){
 
  return 0; //return 0 if test passes 
 }
-
-int test3(){
- return 0; //return 0 if test passes
-}
-
-int test4(){
- return 0; //return 0 if test passes
-}
-
 
 //function for test case #6
 //for blocks marked in-use in the bitmap the block should be used by an inode or an indirect inode
@@ -139,7 +271,7 @@ int test6(){
 int test78(){
  
  int i,j;
- int address_marks[sb->size + 1];								//array to mark previously visited addresses
+ int address_marks[sb->size + 1];					//array to mark previously visited addresses
  for(int i = 0; i < sb->size+ 1; i++){
   address_marks[i] = 0;										//initialize address array to 0
  }
@@ -245,23 +377,90 @@ main(int argc, char *argv[]){
   exit(1);
  }
 
- sb = (struct superblock *) (addr + 1 * BLOCK_SIZE);
- printf("fs size %d, no. of blocks %d, no. of inodes %d \n", sb->size, sb->nblocks, sb->ninodes);
+ //sb = (struct superblock *) (addr + 1 * BLOCK_SIZE);
+ //printf("fs size %d, no. of blocks %d, no. of inodes %d \n", sb->size, sb->nblocks, sb->ninodes);
 
 
- 
- 
+active_inode_list = (int *)calloc(sb->ninodes + 1, sizeof(int));
+
+
+  
+  //Loop over every inode
+  int inum;
+  //TODO: Potential indexing error?
+  for(inum = 1; inum < sb->ninodes + 1; inum++) {
+	struct dinode *ip = INODE_ADDR(inum);
+	check_valid_inode(ip);
+ 	if (inum == 1 && ip->size == 0){
+		fprintf(stderr, "ERROR: root directory does not exist.\n");
+		exit(1);
+	}
+	if(ip->type  == 0) {continue;}//skip over unallocated inodes
+	active_inode_list[inum] = 1;
+	//check that all of the inodes  blocks are present in the bitmap
+	for (i = 0; i < NDIRECT; i++) {
+		int block = ip->addrs[i];
+		if (block != 0) {
+			int alloc = get_bit(block);			
+			printf("Block %d used by inode %d (direct) Allocated: %d\n", block, inum, alloc);
+			if (alloc != 1) { 
+				fprintf(stderr, "ERROR: address used by inode but marked free in bitmap.\n");
+				exit(1);
+			}
+		}
+	}
+
+	// If the inode has an indirect block, read the indirect block
+	if (ip->addrs[NDIRECT] != 0) {
+		
+		int indirect_block = ip->addrs[NDIRECT];
+		
+		int block_list[NINDIRECT];
+
+		// Get the list of blocks from the indirect block
+		get_indirect_blocks(indirect_block, block_list);
+		
+		for (int i = 0; i < NINDIRECT; i++) {
+
+			int block = block_list[i];
+			if (block != 0) {
+				int alloc = get_bit(block);			
+				printf("Block %d used by inode %d (indirect) Allocated: %d\n", block, inum, alloc);
+				if (alloc != 1) { 
+					fprintf(stderr, "ERROR: address used by inode but marked free in bitmap.\n");
+					exit(1);
+				}
+			}
+		}
+	}
+
+
+	printf("inode %d: type %d size %d nlink %d\n", inum, ip->type, ip->size, ip->nlink);
+
+  }
+
+
+  print_directory_contents(ROOTINO);
+  
+  for(inum = 1; inum < sb->ninodes; inum++){
+	if (active_inode_list[inum] == 1){
+		
+		printf("ERROR with inode %d\n", inum);
+		fprintf(stderr, "ERROR: inode marked use but not found in a directory.\n");
+		exit(1);
+	}
+  }
+
 
  //run test cases for file system
  //should exit with error (1) if any test fails
  test2();
  
- //test6();
+ //test6();     //bugfix required
  test78();
  
- //test11();
+ //test11();    //need to finish
  test12();
 
  exit(0); //exit 0 if all tests pass
 }
-
