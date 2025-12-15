@@ -17,6 +17,7 @@
 #define T_DIR 1		//dir
 #define T_FILE 2	//file
 #define T_DEV 3		//device
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 
 #define BLOCK_SIZE (BSIZE)									//constant for block size
 #define INODE_ADDR(i) ((struct dinode *)(addr + IBLOCK(i) * BLOCK_SIZE) + ((i) % IPB))		//translate logical block to physical
@@ -29,7 +30,7 @@ struct dirent *de;		//global struct for directories entry from fcheck_helper
 
 int fsfd;			//used to open image file
 int* active_inode_list;		//used to track allocated inodes to check if they're present in directories 
-
+int* dir_visited;    // used to track inodes that we visit
 
 //Function for test case 1
 //this function checks what type is on the inode 
@@ -63,31 +64,17 @@ void get_indirect_blocks(int indirect_block, int *block_list) {
  }
 }
 
-
-//Helper function to recursively traverse directories from the given inode
-//this function assumes that we've already validated every inode
-void print_directory_contents(int dir_inum) {
- bool found_parent = false;
- bool found_self = false;
- // Access the inode for the directory
- struct dinode *dip = INODE_ADDR(dir_inum);
-
- // Only process if it's a directory (type == 1)
- if (dip->type != 1) {
-  return;
- }
-    
- // Read the directory blocks
- struct dirent *de = (struct dirent *)(addr + (dip->addrs[0]) * BLOCK_SIZE);
- int num_entries = dip->size / sizeof(struct dirent);
-    
- // Loop through the directory entries and print them
- for (int i = 0; i < num_entries; i++, de++) {
+//Helper function for processing directore entries (dirents)
+//Checks if the inode is marked free
+//Checks if the dirent is a properly formatted directory
+//
+void process_dirent(struct dirent *de, int dir_inum, bool* found_parent, bool* found_self){
 	
  // If the entry is a directory, print its contents recursively
  if (de->inum != 0) {
  //printf("inum %d, name %s\n", de->inum, de->name);
-			
+
+ //if (strcmp(de->name, "") == 0) { continue;} //If the inode doesn't have a name dont count it as an entry
  //check if inode was allocated when we looped through the inodes
  if (active_inode_list[de->inum] == 0){
   fprintf(stderr, "ERROR: inode referred to in directory but marked free.\n");
@@ -101,95 +88,86 @@ void print_directory_contents(int dir_inum) {
  if (strcmp(de->name, ".") == 0){
  if (de->inum != dir_inum){
   fprintf(stderr, "ERROR: directory not properly formatted.\n");
+  exit(1);
  }
-  found_self = true;
-  continue;
+  *found_self = true;
+  return;
  } else if (strcmp(de->name, "..") == 0) {
- found_parent = true;
+ *found_parent = true;
  //If we're curretnly in the root dir, check that .. is the root dir still
  if (dir_inum == ROOTINO && de->inum != dir_inum){
   fprintf(stderr, "ERROR: root directory does not exist.\n");
   exit(1);
  }
- continue;
+  return;
 }
 			
   struct dinode *entry_inode = INODE_ADDR(de->inum);
 
-  // If it's a directory, recurse
-  if (entry_inode->type == 1){
-   //printf("  Recursively listing directory: %s\n", de->name);
-   print_directory_contents(de->inum);
+  // If it's a directory, recurse only once per directory inode
+  if (entry_inode->type == 1) {
+  	if (!dir_visited[de->inum]) {
+  		dir_visited[de->inum] = 1;
+  		print_directory_contents(de->inum);
+  	}
   }
  }
 }
+
+//Helper function to recursively traverse directories from the given inode
+//this function assumes that we've already validated every inode
+void print_directory_contents(int dir_inum) {
 	
-// If the inode has an indirect block, read the indirect block
-if (dip->addrs[NDIRECT] != 0) {
-		
- //printf("Done looking at direct blocks\n");
- int indirect_block = dip->addrs[NDIRECT];
-		
- int block_list[NINDIRECT];
-
- // Get the list of blocks from the indirect block
- get_indirect_blocks(indirect_block, block_list);
-		
- for (int i = 0; i < NINDIRECT; i++) {
-  int block = block_list[i];
-  if (block != 0) {
-   struct dirent *de = (struct dirent *)(addr + block_list[i] * BLOCK_SIZE);
-   int num_entries = BLOCK_SIZE / sizeof(struct dirent); 
-				
-   // Loop through the directory entries and print them
-   for (int i = 0; i < num_entries; i++, de++) {
+	struct dinode *dip = INODE_ADDR(dir_inum);
 	
-   // If the entry is a directory, print its contents recursively
-   if (de->inum != 0) {
-    //printf("inum %d, name %s\n", de->inum, de->name);
-			
-    //check if inode was allocated when we looped through the inodes
-   if (active_inode_list[de->inum] == 0){
-     fprintf(stderr, "ERROR: inode referred to in directory but marked free.\n");
-     exit(1);
-   }
-    
-    active_inode_list[de->inum] += 1;
-			
+	if (dip->type != 1) {return;}
+	
+	bool found_parent = false;
+	bool found_self = false;
+	int remaining = dip->size;
 
-    //Skip "." and ".." directory entries and note that we found them
-   if (strcmp(de->name, ".") == 0){
-   if (de->inum != dir_inum){
-    fprintf(stderr, "ERROR: directory not properly formatted.\n");
-   }
-    found_self = true;
-    continue;
-   } 
-   else if (strcmp(de->name, "..") == 0) {
-   found_parent = true;
-   //If we're curretnly in the root dir, check that .. is the root dir still
-   if (dir_inum == ROOTINO && de->inum != dir_inum){
-    fprintf(stderr, "ERROR: root directory does not exist.\n");
-    exit(1);
-   }
-    continue;
-  }
-			
-    struct dinode *entry_inode = INODE_ADDR(de->inum);
+	/* ---------- Direct blocks ---------- */
+	for (int b = 0; b < NDIRECT && remaining > 0; b++) {
+		if (dip->addrs[b] == 0) {continue;}
 
-     // If it's a directory, recurse
-     if (entry_inode->type == 1){
-       //printf("  Recursively listing directory: %s\n", de->name);
-       print_directory_contents(de->inum);
-     }      
-    }
-   }
-  }
- }
-}
-    if (found_self && found_parent) { return;}
-    fprintf(stderr, "ERROR: directory not properly formatted.\n");
-    exit(1);
+		struct dirent *de =(struct dirent *)(addr + dip->addrs[b] * BLOCK_SIZE);
+
+		int entries = BLOCK_SIZE / sizeof(struct dirent);
+		if (entries * sizeof(struct dirent) > remaining) { entries = remaining / sizeof(struct dirent);}
+
+		for (int i = 0; i < entries; i++, de++) {
+			process_dirent(de, dir_inum, &found_parent, &found_self);
+		}
+
+		remaining -= entries * sizeof(struct dirent);
+	}
+
+	/* ---------- Indirect blocks ---------- */
+	if (remaining > 0 && dip->addrs[NDIRECT] != 0) {
+		
+		uint *indirect =(uint *)(addr + dip->addrs[NDIRECT] * BLOCK_SIZE);
+
+		for (int b = 0; b < NINDIRECT && remaining > 0; b++) {
+			if (indirect[b] == 0){continue;}
+	
+			struct dirent *de =(struct dirent *)(addr + indirect[b] * BLOCK_SIZE);
+	
+			int entries = BLOCK_SIZE / sizeof(struct dirent);
+			if (entries * sizeof(struct dirent) > remaining) {entries = remaining / sizeof(struct dirent);}
+
+			for (int i = 0; i < entries; i++, de++) {
+				process_dirent(de, dir_inum, &found_parent, &found_self);
+			}
+
+		remaining -= entries * sizeof(struct dirent);
+		}
+	}
+
+ 
+	if (found_self && found_parent) { return;}
+	
+	fprintf(stderr, "ERROR: directory not properly formatted.\n");
+	exit(1);
 }
 
 
@@ -337,9 +315,9 @@ int test11(){
    //active_inode_list is calulated in the directory helper function
    int refcount = active_inode_list[i] - 1;				       //get reference count in directories for inode
    
+   //printf("%d AAAAAAAAAAA %d BBBBBBBBB %d \n",inode->nlink,refcount, i);
    if(inode->nlink != refcount){					       // compare directory references to inode links
     fprintf(stderr, "ERROR: bad reference count for file.\n");                 //exit with error for file reference count inconsistency
-    //printf("%d AAAAAAAAAAA %d BBBBBBBBB %d \n",inode->nlink,refcount, i);
     exit(1);
    }
   }
@@ -356,8 +334,8 @@ int test12(){
  for(i = 1; i < sb->ninodes; i++){								//run test for every inode
   struct dinode *inode = INODE_ADDR(i);
   if(inode->type == T_DIR && inode->nlink  > 1){						//check number of links if inode is a directory
-   //fprintf(stderr, "ERROR: directory appears more than once in file system.\n");		//exit with error for invalid directory links
-   //exit(1);
+   fprintf(stderr, "ERROR: directory appears more than once in file system.\n");		//exit with error for invalid directory links
+   exit(1);
   }
  }
  return 0; //return 0 if test passes
@@ -394,6 +372,7 @@ sb = (struct superblock *) (addr + 1 * BLOCK_SIZE);						//find the superblock i
 
 
 active_inode_list = (int *)calloc(sb->ninodes + 1, sizeof(int));				//allocate memory for array used in directory helper
+dir_visited = (int *)calloc(sb->ninodes + 1, sizeof(int));				//allocate memory for array used in directory helper
 
   
   //Loop over every inode
